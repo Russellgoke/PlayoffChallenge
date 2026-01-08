@@ -11,6 +11,7 @@ from utils import (
     load_my_team,
     get_team_play_probability,
     get_output_path,
+    ensure_projections_exist,
 )
 
 # Import VOT functions
@@ -269,6 +270,11 @@ def main():
     else:
         print("\nNo my_team.txt found - VOT will not be calculated.")
         print("Create my_team.txt with your drafted players to enable VOT.")
+    
+    # Check if projection files exist, generate if needed
+    required_files = [week_info['filename'] for week_info in PLAYOFF_WEEKS.values()]
+    if not ensure_projections_exist(required_files):
+        print("Warning: Some projection files are missing. Continuing with available files...")
     
     all_baselines = {}
     

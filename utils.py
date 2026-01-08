@@ -110,20 +110,126 @@ def load_team_odds(filename='teamodds.csv', verbose=False):
         return {}
 
 
+def ensure_projections_exist(required_files):
+    """
+    Check if projection files exist, and run grabdata.py if they don't.
+    
+    Args:
+        required_files: List of projection filenames to check
+    
+    Returns:
+        True if all files exist (or were generated), False otherwise
+    """
+    missing_files = []
+    
+    for filename in required_files:
+        # Check output folder first, then root
+        filepath = get_output_path(filename)
+        if not os.path.exists(filepath):
+            filepath = filename
+            if not os.path.exists(filepath):
+                missing_files.append(filename)
+    
+    if missing_files:
+        print(f"\nMissing projection files: {', '.join(missing_files)}")
+        print("Running grabdata.py to generate projections...")
+        try:
+            # Import and run grabdata
+            import grabdata
+            grabdata.main()
+            
+            # Verify files were created
+            still_missing = []
+            for filename in missing_files:
+                filepath = get_output_path(filename)
+                if not os.path.exists(filepath):
+                    filepath = filename
+                    if not os.path.exists(filepath):
+                        still_missing.append(filename)
+            
+            if still_missing:
+                print(f"Warning: Some files still missing after running grabdata: {', '.join(still_missing)}")
+                return False
+            
+            print("Projections generated successfully!")
+            return True
+        except Exception as e:
+            print(f"Error running grabdata.py: {e}")
+            return False
+    
+    return True
+
+
+def ensure_vor_files_exist(required_files):
+    """
+    Check if VOR files exist, and run calculate_vor.py if they don't.
+    
+    Args:
+        required_files: List of VOR filenames to check
+    
+    Returns:
+        True if all files exist (or were generated), False otherwise
+    """
+    missing_files = []
+    
+    for filename in required_files:
+        # Check output folder first, then root
+        filepath = get_output_path(filename)
+        if not os.path.exists(filepath):
+            filepath = filename
+            if not os.path.exists(filepath):
+                missing_files.append(filename)
+    
+    if missing_files:
+        print(f"\nMissing VOR files: {', '.join(missing_files)}")
+        print("Running calculate_vor.py to generate VOR files...")
+        try:
+            # Import and run calculate_vor
+            import calculate_vor
+            calculate_vor.main()
+            
+            # Verify files were created
+            still_missing = []
+            for filename in missing_files:
+                filepath = get_output_path(filename)
+                if not os.path.exists(filepath):
+                    filepath = filename
+                    if not os.path.exists(filepath):
+                        still_missing.append(filename)
+            
+            if still_missing:
+                print(f"Warning: Some files still missing after running calculate_vor: {', '.join(still_missing)}")
+                return False
+            
+            print("VOR files generated successfully!")
+            return True
+        except Exception as e:
+            print(f"Error running calculate_vor.py: {e}")
+            return False
+    
+    return True
+
+
 def load_projections(filename):
     """
     Load player projections from CSV file.
     
     Args:
         filename: Path to projections CSV file
+                  Checks output/ folder first, then root
     
     Returns:
         List of player dicts with keys: name, position, team, half_ppr_points
     """
     players = []
     
+    # Try output directory first, then root
+    filepath = get_output_path(filename)
+    if not os.path.exists(filepath):
+        filepath = filename
+    
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 players.append({
@@ -194,6 +300,45 @@ def get_team_play_probability(team, team_odds, odds_col):
         # Team plays Wild Card at 100% (they're in the playoffs)
         return 1.0
     return team_odds.get(team, {}).get(odds_col, 0.0)
+
+
+def ensure_total_value_exists(filename='total_playoff_value.csv'):
+    """
+    Check if total_playoff_value.csv exists, and run calculate_total_value.py if it doesn't.
+    
+    Args:
+        filename: Name of the total value CSV file
+    
+    Returns:
+        True if file exists (or was generated), False otherwise
+    """
+    # Check output folder first, then root
+    filepath = get_output_path(filename)
+    if not os.path.exists(filepath):
+        filepath = filename
+        if not os.path.exists(filepath):
+            print(f"\nMissing {filename}")
+            print("Running calculate_total_value.py to generate total values...")
+            try:
+                # Import and run calculate_total_value
+                import calculate_total_value
+                calculate_total_value.main()
+                
+                # Verify file was created
+                filepath = get_output_path(filename)
+                if not os.path.exists(filepath):
+                    filepath = filename
+                    if not os.path.exists(filepath):
+                        print(f"Warning: {filename} still missing after running calculate_total_value")
+                        return False
+                
+                print("Total values generated successfully!")
+                return True
+            except Exception as e:
+                print(f"Error running calculate_total_value.py: {e}")
+                return False
+    
+    return True
 
 
 def load_total_values(filename='total_playoff_value.csv'):

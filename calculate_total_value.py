@@ -9,6 +9,7 @@ from utils import (
     load_team_odds,
     load_vor_file,
     get_output_path,
+    ensure_vor_files_exist,
 )
 
 # Playoff weeks and their VOR files with corresponding odds column
@@ -98,6 +99,11 @@ def main():
     team_odds = load_team_odds('teamodds.csv')
     print(f"  Loaded odds for {len(team_odds)} teams")
     print()
+    
+    # Check if VOR files exist, generate if needed
+    required_files = [week_info['vor_file'] for week_info in PLAYOFF_WEEKS]
+    if not ensure_vor_files_exist(required_files):
+        print("Warning: Some VOR files are missing. Continuing with available files...")
     
     # Calculate total values
     player_totals = calculate_total_value(team_odds)

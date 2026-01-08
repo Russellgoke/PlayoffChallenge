@@ -9,6 +9,7 @@ from utils import (
     load_total_values,
     load_drafted_players,
     get_output_path,
+    ensure_total_value_exists,
 )
 
 
@@ -125,6 +126,10 @@ def main():
     print("=" * 70)
     print("DYNAMIC DRAFT VALUE CALCULATOR")
     print("=" * 70)
+    
+    # Check if total_playoff_value.csv exists, generate if needed
+    if not ensure_total_value_exists('total_playoff_value.csv'):
+        print("Warning: total_playoff_value.csv is missing. Continuing anyway...")
     
     # Load all players
     all_players = load_total_values('total_playoff_value.csv')

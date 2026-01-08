@@ -8,6 +8,9 @@ import csv
 sys.stdout.reconfigure(encoding='utf-8')
 load_dotenv()
 
+# Import shared utilities
+from utils import get_output_path
+
 api_key = os.getenv('THE_ODDS_API_KEY')
 if not api_key:
     raise ValueError("API Key not found. Ensure it is set in your .env file.")
@@ -152,14 +155,15 @@ def infer_position(stats):
 
 
 def export_to_csv(projections, filename='playoff_projections_half_ppr.csv'):
-    with open(filename, 'w', newline='', encoding='utf-8') as f:
+    output_file = get_output_path(filename)
+    with open(output_file, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=[
             'name', 'position', 'team', 'game', 'pass_yds', 'pass_tds',
             'rush_yds', 'rec_yds', 'receptions', 'td_prob', 'half_ppr_points', 'games_played'
         ], extrasaction='ignore')
         writer.writeheader()
         writer.writerows(projections)
-    print(f"\n[OK] Projections exported to: {filename}")
+    print(f"\n[OK] Projections exported to: {output_file}")
 
 
 def fetch_fantasypros_projections():
@@ -666,7 +670,8 @@ def main():
     print("CSV FILES GENERATED:")
     print("=" * 70)
     for week_info in PLAYOFF_WEEKS.values():
-        print(f"  - {week_info['filename']}")
+        output_file = get_output_path(week_info['filename'])
+        print(f"  - {output_file}")
     
     return all_round_projections
 

@@ -11,6 +11,7 @@ from utils import (
     load_my_team,
     get_team_play_probability,
     get_output_path,
+    ensure_projections_exist,
 )
 
 # Playoff weeks and their corresponding odds columns
@@ -270,6 +271,11 @@ def main():
     # Load team odds
     print("\nLoading team advancement odds...")
     team_odds = load_team_odds('teamodds.csv')
+    
+    # Check if projection files exist, generate if needed
+    required_files = [week_info['filename'] for week_info in PLAYOFF_WEEKS.values()]
+    if not ensure_projections_exist(required_files):
+        print("Warning: Some projection files are missing. Continuing with available files...")
     
     all_weekly_vot = {}
     total_vot = defaultdict(lambda: {'total_vot': 0, 'total_points': 0})
