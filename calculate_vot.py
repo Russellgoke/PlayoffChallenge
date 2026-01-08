@@ -63,6 +63,53 @@ def get_my_team_players_by_position(my_team_names, players, team_odds, odds_col)
     return by_position
 
 
+def calculate_availability_probs(players):
+    """
+    Calculate probability distribution for how many players are available.
+    
+    Args:
+        players: List of player dicts with 'play_prob' key
+    
+    Returns:
+        Tuple of (prob_0_available, prob_1_available, prob_2_available)
+    """
+    if not players:
+        return (1.0, 0.0, 0.0)
+    
+    n = len(players)
+    
+    # P(0 available) = product of (1 - play_prob) for all players
+    prob_0 = 1.0
+    for p in players:
+        prob_0 *= (1 - p['play_prob'])
+    
+    # P(1 available) = sum over each player of:
+    #   (that player's play_prob) * (all others eliminated)
+    prob_1 = 0.0
+    for i, p in enumerate(players):
+        prob_this_plays = p['play_prob']
+        prob_others_eliminated = 1.0
+        for j, other_p in enumerate(players):
+            if i != j:
+                prob_others_eliminated *= (1 - other_p['play_prob'])
+        prob_1 += prob_this_plays * prob_others_eliminated
+    
+    # P(2 available) = sum over all pairs of players of:
+    #   (both play) * (all others eliminated)
+    prob_2 = 0.0
+    if n >= 2:
+        for i in range(n):
+            for j in range(i + 1, n):
+                prob_both_play = players[i]['play_prob'] * players[j]['play_prob']
+                prob_others_eliminated = 1.0
+                for k, other_p in enumerate(players):
+                    if k != i and k != j:
+                        prob_others_eliminated *= (1 - other_p['play_prob'])
+                prob_2 += prob_both_play * prob_others_eliminated
+    
+    return (prob_0, prob_1, prob_2)
+
+
 def calculate_vot_for_player(new_player, my_team_by_position, team_odds, odds_col):
     """
     Calculate Value Over My Team for a single player.
@@ -84,13 +131,8 @@ def calculate_vot_for_player(new_player, my_team_by_position, team_odds, odds_co
     # Get all my team players at this position, sorted by expected value
     my_position_players = my_team_by_position.get(pos, [])
     
-    if pos == 'QB' or pos == 'TE':
-        # QB and TE: Compare to ALL players better than new player
-        # If ANY better player plays, new player's VOT is zero
-        
-        if not my_position_players:
-            # No player at this position - full value
-            return new_p * new_points
+    if pos == 'QB':
+        # QB: Compare to ALL players better than new player
         
         # Find all players better than the new player (by projected points)
         better_players = [p for p in my_position_players if p['half_ppr_points'] > new_points]
@@ -99,125 +141,98 @@ def calculate_vot_for_player(new_player, my_team_by_position, team_odds, odds_co
             # New player is better than all my players at this position - full value
             return new_p * new_points
         
-        # Calculate probability that ANY better player will play
-        # P(any play) = 1 - P(all eliminated)
-        # P(all eliminated) = product of (1 - play_prob) for each better player
+        # Calculate probability that ALL better players are eliminated
         prob_all_eliminated = 1.0
         for better_p in better_players:
             prob_all_eliminated *= (1 - better_p['play_prob'])
-        
-        prob_any_play = 1 - prob_all_eliminated
-        
-        # If any better player plays, new player has zero value
-        if prob_any_play > 0:
-            return 0.0
-        
         # All better players eliminated - new player provides full value
-        return new_p * new_points
+        return prob_all_eliminated * new_p * new_points
     
     elif pos in ['RB', 'WR']:
-        # RB/WR: Compare to all better players at position
-        # New player has value only if fewer than 2 better players are available
+        # RB/WR: Can start if:
+        # - 0 or 1 better players available in their position, OR
+        # - 2 better players available in their position AND (0, 1, or 2 better players 
+        #   available in the other RB/WR position) AND (0 or 1 better TE available)
+        
+        # Find all players better than the new player (by projected points) at this position
+        better_players_this_pos = [p for p in my_position_players if p['half_ppr_points'] > new_points]
+        
+        if not better_players_this_pos:
+            # New player is better than all my players at this position - full value
+            return new_p * new_points
+        
+        # Get availability probabilities for this position
+        prob_0_this, prob_1_this, prob_2_this = calculate_availability_probs(better_players_this_pos)
+        
+        # Case 1: 0 or 1 better players available in this position - can start at position
+        prob_start_at_position = prob_0_this + prob_1_this
+        
+        # Case 2: 2 better players available in this position - can only start if FLEX eligible
+        # Need to check other positions
+        other_pos = 'WR' if pos == 'RB' else 'RB'
+        other_position_players = my_team_by_position.get(other_pos, [])
+        
+        # Find better players in the other RB/WR position
+        better_players_other_pos = [p for p in other_position_players if p['half_ppr_points'] > new_points]
+        prob_0_other, prob_1_other, prob_2_other = calculate_availability_probs(better_players_other_pos)
+        
+        # Find better TEs
+        te_players = my_team_by_position.get('TE', [])
+        better_tes = [p for p in te_players if p['half_ppr_points'] > new_points]
+        prob_0_te, prob_1_te, prob_2_te = calculate_availability_probs(better_tes)
+        
+        # For FLEX: Need (0, 1, or 2 better in other RB/WR) AND (0 or 1 better TE)
+        prob_flex_eligible = (prob_0_other + prob_1_other + prob_2_other) * (prob_0_te + prob_1_te)
+        
+        # Total probability of starting:
+        # - Start at position: prob_0_this + prob_1_this
+        # - Start as FLEX (when 2 better in position): prob_2_this * prob_flex_eligible
+        prob_start = prob_start_at_position + (prob_2_this * prob_flex_eligible)
+        
+        return prob_start * new_p * new_points
+    
+    elif pos == 'TE':
+        # TE: Can start if 0 better TEs available (non-FLEX start)
+        # Otherwise can only be FLEX if eligible
         
         # Find all players better than the new player (by projected points)
         better_players = [p for p in my_position_players if p['half_ppr_points'] > new_points]
         
         if not better_players:
-            # New player is better than all my players at this position - full value
+            # New player is better than all my TEs - full value
             return new_p * new_points
         
-        # Calculate probability that fewer than 2 better players are available
-        # This means the new player can be RB2/WR2 or better
+        # Get availability probabilities for TE
+        prob_0_te, prob_1_te = calculate_availability_probs(better_players)
         
-        # Calculate probability that 2+ better players are available
-        # P(2+ available) = 1 - P(0 available) - P(1 available)
+        # Case 1: 0 better TEs available - can start at TE position
+        prob_start_at_te = prob_0_te
         
-        # P(0 available) = product of (1 - play_prob) for all better players
-        prob_0_available = 1.0
-        for better_p in better_players:
-            prob_0_available *= (1 - better_p['play_prob'])
+        # Case 2: 1+ better TEs available - can only start if FLEX eligible
+        # Need to check RB and WR positions
+        rb_players = my_team_by_position.get('RB', [])
+        wr_players = my_team_by_position.get('WR', [])
         
-        # P(1 available) = sum over each better player of:
-        #   (that player's play_prob) * (all others eliminated)
-        prob_1_available = 0.0
-        for i, better_p in enumerate(better_players):
-            prob_this_plays = better_p['play_prob']
-            prob_others_eliminated = 1.0
-            for j, other_p in enumerate(better_players):
-                if i != j:
-                    prob_others_eliminated *= (1 - other_p['play_prob'])
-            prob_1_available += prob_this_plays * prob_others_eliminated
-                
-        # Position value: only if fewer than 2 better players available
-        # If 2+ better players are available, new player can't be RB1/RB2 or WR1/WR2
-        position_vot = (prob_0_available + prob_1_available) * new_p * new_points
+        # Find better RBs and WRs
+        better_rbs = [p for p in rb_players if p['half_ppr_points'] > new_points]
+        better_wrs = [p for p in wr_players if p['half_ppr_points'] > new_points]
         
-        # FLEX value: New player must be better than BOTH 3rd best RB AND 3rd best WR
-        # (and better than best TE if TE is being used as FLEX)
-        top_2_rbs = my_team_by_position.get('RB', [])[:2]
-        top_2_wrs = my_team_by_position.get('WR', [])[:2]
-        guaranteed_starters = set()
-        for p in top_2_rbs + top_2_wrs:
-            guaranteed_starters.add(p['name'])
+        prob_0_rb, prob_1_rb, prob_2_rb = calculate_availability_probs(better_rbs)
+        prob_0_wr, prob_1_wr, prob_2_wr = calculate_availability_probs(better_wrs)
         
-        # Get 3rd best RB and 3rd best WR
-        rb_3rd = my_team_by_position.get('RB', [])[2] if len(my_team_by_position.get('RB', [])) >= 3 else None
-        wr_3rd = my_team_by_position.get('WR', [])[2] if len(my_team_by_position.get('WR', [])) >= 3 else None
+        # For FLEX: Need (0, 1, or 2 better RBs) AND (0, 1, or 2 better WRs)
+        prob_flex_eligible = (prob_0_rb + prob_1_rb + prob_2_rb) * (prob_0_wr + prob_1_wr + prob_2_wr)
         
-        # Get best TE (if not already starting)
-        best_te = None
-        te_players = my_team_by_position.get('TE', [])
-        if te_players:
-            best_te = te_players[0]  # Already sorted by projected points
+        # Total probability of starting:
+        # - Start at TE: prob_0_te
+        # - Start as FLEX (when 1+ better TEs): (prob_1_te + prob_2_te) * prob_flex_eligible
+        prob_start = prob_start_at_te + (prob_1_te * prob_flex_eligible)
         
-        flex_vot = 0.0
-        
-        # Check if new player is better than 3rd RB (if exists)
-        better_than_rb3 = True
-        if rb_3rd:
-            better_than_rb3 = new_points > rb_3rd['half_ppr_points']
-        
-        # Check if new player is better than 3rd WR (if exists)
-        better_than_wr3 = True
-        if wr_3rd:
-            better_than_wr3 = new_points > wr_3rd['half_ppr_points']
-        
-        # Check if new player is better than best TE (if TE is FLEX candidate)
-        better_than_te = True
-        if best_te and best_te['name'] not in guaranteed_starters:
-            better_than_te = new_points > best_te['half_ppr_points']
-        
-        # New player is FLEX-eligible if better than both 3rd RB and 3rd WR
-        # (and better than TE if TE is in the mix)
-        if better_than_rb3 and better_than_wr3:
-            # Determine the best FLEX candidate (worst of the ones new player beats)
-            flex_candidates = []
-            if rb_3rd:
-                flex_candidates.append(rb_3rd)
-            if wr_3rd:
-                flex_candidates.append(wr_3rd)
-            if best_te and best_te['name'] not in guaranteed_starters:
-                flex_candidates.append(best_te)
-            
-            if flex_candidates:
-                # Find worst FLEX candidate (lowest projected points)
-                worst_flex = min(flex_candidates, key=lambda x: x['half_ppr_points'])
-                
-                # Calculate probability that worst FLEX is eliminated
-                # Actually, we need probability that ALL FLEX candidates are eliminated
-                # because new player needs to beat all of them
-                prob_all_flex_eliminated = 1.0
-                for flex_candidate in flex_candidates:
-                    prob_all_flex_eliminated *= (1 - flex_candidate['play_prob'])
-                
-                flex_vot = prob_all_flex_eliminated * new_p * new_points
-        
-        # Return maximum of position value and FLEX value
-        return max(position_vot, flex_vot)
+        return prob_start * new_p * new_points
     
     else:
         # Unknown position - no value
-        return 0.0
+        raise ValueError(f"Unknown position: {pos}")
 
 
 def calculate_weekly_vot(players, my_team_names, team_odds, odds_col, round_name):
