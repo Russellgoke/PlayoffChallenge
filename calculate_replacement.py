@@ -1,7 +1,16 @@
 import csv
 import sys
+from collections import defaultdict
 
 sys.stdout.reconfigure(encoding='utf-8')
+
+# Import VOT functions
+from calculate_vot import (
+    load_my_team,
+    get_my_team_players_by_position,
+    calculate_vot_for_player,
+    get_team_play_probability,
+)
 
 # Playoff weeks and their corresponding odds columns
 PLAYOFF_WEEKS = {
@@ -13,13 +22,13 @@ PLAYOFF_WEEKS = {
 
 # Replacement value target ranks for each position slot
 REPLACEMENT_RANKS = {
-    'QB': 3,
-    'TE': 8,
-    'WR1': 8,
-    'WR2': 8,
-    'RB1': 8,
-    'RB2': 8,
-    'FLEX': 9
+    'QB': 5,
+    'TE': 10,
+    'WR1': 10,
+    'WR2': 10,
+    'RB1': 10,
+    'RB2': 10,
+    'FLEX': 15
 }
 
 
@@ -103,19 +112,20 @@ def load_projections(filename):
         return []
 
 
-def calculate_probability_weighted_baseline(players, position, target_rank, team_odds, odds_col):
+def calculate_probability_weighted_baseline(players, position, target_rank, team_odds, odds_col, use_vot=False):
     """
     Calculate the probability-weighted baseline for a position.
     
     Args:
-        players: List of player dicts
+        players: List of player dicts (must have 'vot' field if use_vot=True)
         position: Position to filter (e.g., 'QB', 'RB', 'WR', 'TE') or 'FLEX' for RB/WR/TE
         target_rank: The target rank for replacement (e.g., 3 for 3rd best available)
         team_odds: Dict of team advancement odds
         odds_col: Column name for odds (e.g., 'DIV APP') or None for Wild Card (100%)
+        use_vot: If True, use VOT for baseline instead of raw points
     
     Returns:
-        Tuple of (baseline_points, baseline_player_name)
+        Tuple of (baseline_value, baseline_player_name)
     """
     # Filter players by position
     if position == 'FLEX':
@@ -123,101 +133,113 @@ def calculate_probability_weighted_baseline(players, position, target_rank, team
     else:
         filtered = [p for p in players if p['position'] == position]
     
-    # Sort by projected points (descending)
-    filtered.sort(key=lambda x: x['half_ppr_points'], reverse=True)
+    # Determine which field to use for sorting and baseline
+    value_field = 'vot' if use_vot else 'half_ppr_points'
+    
+    # Sort by value (descending)
+    filtered.sort(key=lambda x: x.get(value_field, 0), reverse=True)
     
     if not filtered:
         return 0, "N/A"
     
     # Calculate cumulative probability
     cumulative_prob = 0.0
-    baseline_points = 0
+    baseline_value = 0
     baseline_player = "N/A"
     
     for player in filtered:
         team = player['team']
         
         # Get team's probability of being in this round
-        if odds_col is None:
-            # Wild Card - all teams at 100%
-            prob = 1.0
-        else:
-            prob = team_odds.get(team, {}).get(odds_col, 0.0)
+        prob = get_team_play_probability(team, team_odds, odds_col)
         
         cumulative_prob += prob
         
         # When we reach the target rank, this is our baseline
         if cumulative_prob >= target_rank:
-            baseline_points = player['half_ppr_points']
+            baseline_value = player.get(value_field, 0)
             baseline_player = player['name']
             break
     
     # If we didn't reach target rank, use the last player
-    if baseline_points == 0 and filtered:
-        baseline_points = filtered[-1]['half_ppr_points']
+    if baseline_value == 0 and filtered:
+        baseline_value = filtered[-1].get(value_field, 0)
         baseline_player = filtered[-1]['name']
     
-    return baseline_points, baseline_player
+    return baseline_value, baseline_player
 
 
-def calculate_all_baselines(players, team_odds, odds_col, round_name):
+def calculate_all_baselines(players, team_odds, odds_col, round_name, use_vot=False):
     """Calculate baselines for all position slots"""
     baselines = {}
     
+    baseline_type = "VOT" if use_vot else "POINTS"
     print(f"\n{'='*60}")
-    print(f"REPLACEMENT VALUES - {round_name.upper()}")
+    print(f"REPLACEMENT VALUES ({baseline_type}) - {round_name.upper()}")
     print(f"{'='*60}")
     
+    unit = "VOT" if use_vot else "pts"
+    
     # QB
-    pts, name = calculate_probability_weighted_baseline(
-        players, 'QB', REPLACEMENT_RANKS['QB'], team_odds, odds_col)
-    baselines['QB'] = pts
-    print(f"  QB  (rank {REPLACEMENT_RANKS['QB']}): {pts:6.2f} pts - {name}")
+    val, name = calculate_probability_weighted_baseline(
+        players, 'QB', REPLACEMENT_RANKS['QB'], team_odds, odds_col, use_vot)
+    baselines['QB'] = val
+    print(f"  QB  (rank {REPLACEMENT_RANKS['QB']}): {val:6.2f} {unit} - {name}")
     
     # TE
-    pts, name = calculate_probability_weighted_baseline(
-        players, 'TE', REPLACEMENT_RANKS['TE'], team_odds, odds_col)
-    baselines['TE'] = pts
-    print(f"  TE  (rank {REPLACEMENT_RANKS['TE']}): {pts:6.2f} pts - {name}")
+    val, name = calculate_probability_weighted_baseline(
+        players, 'TE', REPLACEMENT_RANKS['TE'], team_odds, odds_col, use_vot)
+    baselines['TE'] = val
+    print(f"  TE  (rank {REPLACEMENT_RANKS['TE']}): {val:6.2f} {unit} - {name}")
     
     # WR1
-    pts, name = calculate_probability_weighted_baseline(
-        players, 'WR', REPLACEMENT_RANKS['WR1'], team_odds, odds_col)
-    baselines['WR1'] = pts
-    print(f"  WR1 (rank {REPLACEMENT_RANKS['WR1']}): {pts:6.2f} pts - {name}")
+    val, name = calculate_probability_weighted_baseline(
+        players, 'WR', REPLACEMENT_RANKS['WR1'], team_odds, odds_col, use_vot)
+    baselines['WR1'] = val
+    print(f"  WR1 (rank {REPLACEMENT_RANKS['WR1']}): {val:6.2f} {unit} - {name}")
     
     # WR2
-    pts, name = calculate_probability_weighted_baseline(
-        players, 'WR', REPLACEMENT_RANKS['WR2'], team_odds, odds_col)
-    baselines['WR2'] = pts
-    print(f"  WR2 (rank {REPLACEMENT_RANKS['WR2']}): {pts:6.2f} pts - {name}")
+    val, name = calculate_probability_weighted_baseline(
+        players, 'WR', REPLACEMENT_RANKS['WR2'], team_odds, odds_col, use_vot)
+    baselines['WR2'] = val
+    print(f"  WR2 (rank {REPLACEMENT_RANKS['WR2']}): {val:6.2f} {unit} - {name}")
     
     # RB1
-    pts, name = calculate_probability_weighted_baseline(
-        players, 'RB', REPLACEMENT_RANKS['RB1'], team_odds, odds_col)
-    baselines['RB1'] = pts
-    print(f"  RB1 (rank {REPLACEMENT_RANKS['RB1']}): {pts:6.2f} pts - {name}")
+    val, name = calculate_probability_weighted_baseline(
+        players, 'RB', REPLACEMENT_RANKS['RB1'], team_odds, odds_col, use_vot)
+    baselines['RB1'] = val
+    print(f"  RB1 (rank {REPLACEMENT_RANKS['RB1']}): {val:6.2f} {unit} - {name}")
     
     # RB2
-    pts, name = calculate_probability_weighted_baseline(
-        players, 'RB', REPLACEMENT_RANKS['RB2'], team_odds, odds_col)
-    baselines['RB2'] = pts
-    print(f"  RB2 (rank {REPLACEMENT_RANKS['RB2']}): {pts:6.2f} pts - {name}")
+    val, name = calculate_probability_weighted_baseline(
+        players, 'RB', REPLACEMENT_RANKS['RB2'], team_odds, odds_col, use_vot)
+    baselines['RB2'] = val
+    print(f"  RB2 (rank {REPLACEMENT_RANKS['RB2']}): {val:6.2f} {unit} - {name}")
     
     # FLEX
-    pts, name = calculate_probability_weighted_baseline(
-        players, 'FLEX', REPLACEMENT_RANKS['FLEX'], team_odds, odds_col)
-    baselines['FLEX'] = pts
-    print(f"  FLEX (rank {REPLACEMENT_RANKS['FLEX']}): {pts:6.2f} pts - {name}")
+    val, name = calculate_probability_weighted_baseline(
+        players, 'FLEX', REPLACEMENT_RANKS['FLEX'], team_odds, odds_col, use_vot)
+    baselines['FLEX'] = val
+    print(f"  FLEX (rank {REPLACEMENT_RANKS['FLEX']}): {val:6.2f} {unit} - {name}")
     
     return baselines
 
 
-def calculate_vor(players, baselines):
-    """Calculate Value Over Replacement for each player"""
+def calculate_vor(players, baselines, use_vot=False):
+    """
+    Calculate Value Over Replacement for each player.
+    
+    If use_vot=True, calculates VOR based on VOT values (requires 'vot' field).
+    This means VOR = player's VOT - replacement-level VOT.
+    """
     for player in players:
         pos = player['position']
-        pts = player['half_ppr_points']
+        
+        # Use VOT if available and requested, otherwise use raw points
+        if use_vot and 'vot' in player:
+            value = player['vot']
+        else:
+            value = player['half_ppr_points']
         
         # Use the appropriate baseline
         if pos == 'QB':
@@ -231,27 +253,69 @@ def calculate_vor(players, baselines):
         else:
             baseline = baselines['FLEX']
         
-        player['vor'] = pts - baseline
+        player['vor'] = value - baseline
     
     return players
 
 
-def export_with_vor(players, baselines, filename):
-    """Export players with VOR to CSV"""
-    # Calculate VOR
-    players = calculate_vor(players, baselines)
+def export_with_vor(players, baselines, filename, my_team_names=None, my_team_by_position=None, team_odds=None, odds_col=None):
+    """
+    Export players with VOR and VOT to CSV.
+    
+    Flow when my_team is provided:
+    1. Calculate VOT first (value over your team)
+    2. Calculate VOT baselines (replacement-level VOT)
+    3. Calculate VOR = VOT - VOT baseline
+    
+    Flow when no my_team:
+    1. Calculate VOR = raw points - points baseline
+    """
+    has_vot = my_team_names and my_team_by_position is not None
+    
+    if has_vot:
+        # Step 1: Calculate VOT for all players first
+        for player in players:
+            player['vot'] = calculate_vot_for_player(player, my_team_by_position, team_odds, odds_col)
+            player['play_prob'] = get_team_play_probability(player['team'], team_odds, odds_col)
+            player['on_my_team'] = 1 if player['name'] in my_team_names else 0
+        
+        # Step 2: Calculate VOT baselines (replacement-level VOT at each position)
+        vot_baselines = calculate_all_baselines(players, team_odds, odds_col, 
+                                                 f"{filename.split('_')[2].replace('.csv','')} VOT", 
+                                                 use_vot=True)
+        
+        # Step 3: Calculate VOR using VOT values
+        players = calculate_vor(players, vot_baselines, use_vot=True)
+    else:
+        # No team provided - use raw points for VOR
+        players = calculate_vor(players, baselines, use_vot=False)
     
     # Sort by VOR
     players.sort(key=lambda x: x['vor'], reverse=True)
     
     output_file = filename.replace('.csv', '_vor.csv')
     
-    with open(output_file, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['name', 'position', 'team', 'half_ppr_points', 'vor'])
-        writer.writeheader()
-        writer.writerows(players)
+    # Determine fieldnames based on whether we have VOT
+    if has_vot:
+        fieldnames = ['name', 'position', 'team', 'half_ppr_points', 'play_prob', 'vot', 'vor', 'on_my_team']
+    else:
+        fieldnames = ['name', 'position', 'team', 'half_ppr_points', 'vor']
     
-    print(f"\n  Exported VOR rankings to: {output_file}")
+    with open(output_file, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+        writer.writeheader()
+        for p in players:
+            row = {k: p.get(k, '') for k in fieldnames}
+            # Round numeric values
+            if 'play_prob' in row and row['play_prob'] != '':
+                row['play_prob'] = round(row['play_prob'], 3)
+            if 'vor' in row and row['vor'] != '':
+                row['vor'] = round(row['vor'], 2)
+            if 'vot' in row and row['vot'] != '':
+                row['vot'] = round(row['vot'], 2)
+            writer.writerow(row)
+    
+    print(f"\n  Exported rankings to: {output_file}")
     return output_file
 
 
@@ -266,6 +330,16 @@ def main():
     
     if not team_odds:
         print("No team odds loaded. Using 100% for all teams.")
+    
+    # Load my team for VOT calculations
+    my_team_names = load_my_team('my_team.txt')
+    if my_team_names:
+        print(f"\nLoaded my team ({len(my_team_names)} players):")
+        for name in my_team_names:
+            print(f"  - {name}")
+    else:
+        print("\nNo my_team.txt found - VOT will not be calculated.")
+        print("Create my_team.txt with your drafted players to enable VOT.")
     
     all_baselines = {}
     
@@ -285,8 +359,23 @@ def main():
         baselines = calculate_all_baselines(players, team_odds, odds_col, round_name)
         all_baselines[round_name] = baselines
         
-        # Export with VOR
-        export_with_vor(players.copy(), baselines, filename)
+        # Get my team players by position (for VOT calculation)
+        my_team_by_position = None
+        if my_team_names:
+            my_team_by_position = get_my_team_players_by_position(my_team_names, players, team_odds, odds_col)
+            
+            # Print my team by position
+            print(f"\n  My Team for {round_name}:")
+            for pos in ['QB', 'RB', 'WR', 'TE']:
+                pos_players = my_team_by_position.get(pos, [])
+                if pos_players:
+                    print(f"    {pos}:")
+                    for p in pos_players:
+                        print(f"      {p['name']:<25} - {p['half_ppr_points']:.2f} pts ({p['play_prob']:.1%})")
+        
+        # Export with VOR (and VOT if my team is loaded)
+        export_with_vor(players.copy(), baselines, filename, 
+                        my_team_names, my_team_by_position, team_odds, odds_col)
     
     # Summary comparison across weeks
     print("\n" + "=" * 60)

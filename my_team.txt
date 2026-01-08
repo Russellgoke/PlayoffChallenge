@@ -1,0 +1,6 @@
+# My Team - Add your drafted players below (one per line)
+# Lines starting with # are comments and will be ignored
+Drake Maye
+Davante Adams
+AJ Barner
+Courtland Sutton
