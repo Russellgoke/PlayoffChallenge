@@ -4,26 +4,10 @@ from collections import defaultdict
 
 sys.stdout.reconfigure(encoding='utf-8')
 
+# Import shared utilities
+from utils import load_total_values
 
-def load_total_values(filename='total_playoff_value.csv'):
-    """Load total playoff values from CSV"""
-    players = []
-    
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                players.append({
-                    'name': row['name'],
-                    'position': row['position'],
-                    'team': row['team'],
-                    'total_vor': float(row['total_vor']),
-                    'total_points': float(row['total_points']),
-                })
-        return players
-    except Exception as e:
-        print(f"Error loading {filename}: {e}")
-        return []
+
 
 
 def calculate_draft_value(players):

@@ -4,6 +4,14 @@ from collections import defaultdict
 
 sys.stdout.reconfigure(encoding='utf-8')
 
+# Import shared utilities
+from utils import (
+    load_team_odds,
+    load_projections,
+    load_my_team,
+    get_team_play_probability,
+)
+
 # Playoff weeks and their corresponding odds columns
 PLAYOFF_WEEKS = {
     'Wild Card': {'filename': 'playoff_projections_wildcard.csv', 'odds_col': None},
@@ -22,110 +30,6 @@ ROSTER_SLOTS = {
 }
 
 
-def load_team_odds(filename='teamodds.csv'):
-    """Load team advancement odds from CSV file"""
-    team_odds = {}
-    
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-            
-            for line in lines[1:]:  # Skip header
-                parts = line.strip().split('\t')
-                if len(parts) >= 2:
-                    team = parts[0].strip()
-                    
-                    def parse_pct(s):
-                        s = s.strip().replace('%', '')
-                        try:
-                            return float(s) / 100
-                        except:
-                            return 0.0
-                    
-                    col1_parts = parts[1].split() if len(parts) > 1 else []
-                    
-                    if len(parts) >= 5:
-                        div_app = parse_pct(col1_parts[0]) if col1_parts else 0
-                        conf_app = parse_pct(col1_parts[-1]) if len(col1_parts) > 1 else parse_pct(parts[2])
-                        conf_win = parse_pct(parts[3])
-                        sb_win = parse_pct(parts[4])
-                    else:
-                        div_app = parse_pct(col1_parts[0]) if col1_parts else 0
-                        conf_app = parse_pct(col1_parts[1]) if len(col1_parts) > 1 else 0
-                        conf_win = parse_pct(parts[2]) if len(parts) > 2 else 0
-                        sb_win = parse_pct(parts[3]) if len(parts) > 3 else 0
-                    
-                    team_odds[team] = {
-                        'DIV APP': div_app,
-                        'Conf App': conf_app,
-                        'Conf Win': conf_win,
-                        'SB Win': sb_win,
-                    }
-        
-        return team_odds
-        
-    except FileNotFoundError:
-        print(f"Warning: {filename} not found.")
-        return {}
-    except Exception as e:
-        print(f"Error loading team odds: {e}")
-        return {}
-
-
-def load_projections(filename):
-    """Load player projections from CSV file"""
-    players = []
-    
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                players.append({
-                    'name': row['name'],
-                    'position': row['position'],
-                    'team': row['team'],
-                    'half_ppr_points': float(row['half_ppr_points']),
-                })
-        return players
-    except FileNotFoundError:
-        print(f"Warning: {filename} not found.")
-        return []
-    except Exception as e:
-        print(f"Error loading {filename}: {e}")
-        return []
-
-
-def load_my_team(filename='my_team.txt'):
-    """Load my team players from text file"""
-    my_team = []
-    
-    try:
-        with open(filename, 'r', encoding='utf-8-sig') as f:
-            for line in f:
-                line = line.strip()
-                # Skip empty lines and comments
-                if line and not line.startswith('#'):
-                    my_team.append(line)
-        return my_team
-    except FileNotFoundError:
-        print(f"Note: {filename} not found. No team loaded.")
-        return []
-    except Exception as e:
-        print(f"Error loading {filename}: {e}")
-        return []
-
-
-def get_team_play_probability(team, team_odds, odds_col):
-    """Get probability that a team plays in this round"""
-    if odds_col is None:
-        # Wild Card - teams with 100% DIV APP have a bye (don't play Wild Card)
-        div_app = team_odds.get(team, {}).get('DIV APP', 0.0)
-        if div_app >= 1.0:
-            # Team has a bye - they don't play Wild Card
-            return 0.0
-        # Team plays Wild Card at 100% (they're in the playoffs)
-        return 1.0
-    return team_odds.get(team, {}).get(odds_col, 0.0)
 
 
 def get_my_team_players_by_position(my_team_names, players, team_odds, odds_col):
@@ -169,11 +73,10 @@ def calculate_vot_for_player(new_player, my_team_by_position, team_odds, odds_co
     """
     pos = new_player['position']
     new_points = new_player['half_ppr_points']
-    p_new = get_team_play_probability(new_player['team'], team_odds, odds_col)
-    new_expected = new_points * p_new
+    new_p = get_team_play_probability(new_player['team'], team_odds, odds_col)
     
     # No value if team won't play
-    if p_new == 0:
+    if new_p == 0:
         return 0.0
     
     # Get all my team players at this position, sorted by expected value
@@ -185,14 +88,14 @@ def calculate_vot_for_player(new_player, my_team_by_position, team_odds, odds_co
         
         if not my_position_players:
             # No player at this position - full value
-            return p_new * new_points
+            return new_p * new_points
         
         # Find all players better than the new player (by projected points)
         better_players = [p for p in my_position_players if p['half_ppr_points'] > new_points]
         
         if not better_players:
             # New player is better than all my players at this position - full value
-            return p_new * new_points
+            return new_p * new_points
         
         # Calculate probability that ANY better player will play
         # P(any play) = 1 - P(all eliminated)
@@ -208,7 +111,7 @@ def calculate_vot_for_player(new_player, my_team_by_position, team_odds, odds_co
             return 0.0
         
         # All better players eliminated - new player provides full value
-        return p_new * new_points
+        return new_p * new_points
     
     elif pos in ['RB', 'WR']:
         # RB/WR: Compare to all better players at position
@@ -219,7 +122,7 @@ def calculate_vot_for_player(new_player, my_team_by_position, team_odds, odds_co
         
         if not better_players:
             # New player is better than all my players at this position - full value
-            return p_new * new_points
+            return new_p * new_points
         
         # Calculate probability that fewer than 2 better players are available
         # This means the new player can be RB2/WR2 or better
@@ -245,7 +148,7 @@ def calculate_vot_for_player(new_player, my_team_by_position, team_odds, odds_co
                 
         # Position value: only if fewer than 2 better players available
         # If 2+ better players are available, new player can't be RB1/RB2 or WR1/WR2
-        position_vot = (prob_0_available + prob_1_available) * p_new * new_points
+        position_vot = (prob_0_available + prob_1_available) * new_p * new_points
         
         # FLEX value: New player must be better than BOTH 3rd best RB AND 3rd best WR
         # (and better than best TE if TE is being used as FLEX)
@@ -305,7 +208,7 @@ def calculate_vot_for_player(new_player, my_team_by_position, team_odds, odds_co
                 for flex_candidate in flex_candidates:
                     prob_all_flex_eliminated *= (1 - flex_candidate['play_prob'])
                 
-                flex_vot = prob_all_flex_eliminated * p_new * new_points
+                flex_vot = prob_all_flex_eliminated * new_p * new_points
         
         # Return maximum of position value and FLEX value
         return max(position_vot, flex_vot)

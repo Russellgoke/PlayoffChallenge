@@ -4,49 +4,13 @@ from collections import defaultdict
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-
-def load_total_values(filename='total_playoff_value.csv'):
-    """Load total playoff values from CSV"""
-    players = []
-    
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                players.append({
-                    'name': row['name'],
-                    'position': row['position'],
-                    'team': row['team'],
-                    'total_vor': float(row['total_vor']),
-                    'total_points': float(row['total_points']),
-                })
-        return players
-    except Exception as e:
-        print(f"Error loading {filename}: {e}")
-        return []
+# Import shared utilities
+from utils import (
+    load_total_values,
+    load_drafted_players,
+)
 
 
-def load_drafted_players(filename='players_drafted.txt'):
-    """Load list of drafted players from text file"""
-    drafted = []
-    
-    try:
-        with open(filename, 'r', encoding='utf-8-sig') as f:  # utf-8-sig handles BOM
-            content = f.read()
-            # Split by comma or newline and strip whitespace
-            names = []
-            for line in content.replace(',', '\n').split('\n'):
-                name = line.strip()
-                if name:
-                    names.append(name)
-            drafted = names
-        return drafted
-    except FileNotFoundError:
-        print(f"Note: {filename} not found. Starting with empty draft.")
-        return []
-    except Exception as e:
-        print(f"Error loading {filename}: {e}")
-        return []
 
 
 def find_similar_names(name, all_names, max_suggestions=3):

@@ -4,6 +4,12 @@ from collections import defaultdict
 
 sys.stdout.reconfigure(encoding='utf-8')
 
+# Import shared utilities
+from utils import (
+    load_team_odds,
+    load_vor_file,
+)
+
 # Playoff weeks and their VOR files with corresponding odds column
 PLAYOFF_WEEKS = [
     {'name': 'Wild Card', 'vor_file': 'playoff_projections_wildcard_vor.csv', 'odds_col': None},
@@ -13,77 +19,6 @@ PLAYOFF_WEEKS = [
 ]
 
 
-def load_team_odds(filename='teamodds.csv'):
-    """Load team advancement odds from CSV file"""
-    team_odds = {}
-    
-    def parse_pct(s):
-        s = s.strip().replace('%', '')
-        try:
-            return float(s) / 100
-        except:
-            return 0.0
-    
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-            
-            for line in lines[1:]:  # Skip header
-                # Split by tabs
-                parts = line.strip().split('\t')
-                if len(parts) < 2:
-                    continue
-                
-                team = parts[0].strip()
-                
-                # The format has "DIV APP  Conf App" in one column due to spaces
-                # Split all remaining columns by whitespace to get all percentages
-                all_values = []
-                for part in parts[1:]:
-                    all_values.extend(part.split())
-                
-                # Extract the 4 percentage values
-                if len(all_values) >= 4:
-                    div_app = parse_pct(all_values[0])
-                    conf_app = parse_pct(all_values[1])
-                    conf_win = parse_pct(all_values[2])
-                    sb_win = parse_pct(all_values[3])
-                else:
-                    div_app = conf_app = conf_win = sb_win = 0
-                
-                team_odds[team] = {
-                    'DIV APP': div_app,
-                    'Conf App': conf_app,
-                    'Conf Win': conf_win,
-                    'SB Win': sb_win,
-                }
-        
-        return team_odds
-        
-    except Exception as e:
-        print(f"Error loading team odds: {e}")
-        return {}
-
-
-def load_vor_file(filename):
-    """Load VOR data from CSV file"""
-    players = {}
-    
-    try:
-        with open(filename, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                name = row['name']
-                players[name] = {
-                    'position': row['position'],
-                    'team': row['team'],
-                    'half_ppr_points': float(row['half_ppr_points']),
-                    'vor': float(row['vor']),
-                }
-        return players
-    except Exception as e:
-        print(f"Error loading {filename}: {e}")
-        return {}
 
 
 def calculate_total_value(team_odds):
@@ -250,4 +185,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
