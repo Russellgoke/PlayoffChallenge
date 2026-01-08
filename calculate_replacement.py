@@ -13,13 +13,13 @@ PLAYOFF_WEEKS = {
 
 # Replacement value target ranks for each position slot
 REPLACEMENT_RANKS = {
-    'QB': 5,
-    'TE': 13,
-    'WR1': 13,
-    'WR2': 13,
-    'RB1': 13,
-    'RB2': 13,
-    'FLEX': 20,
+    'QB': 3,
+    'TE': 8,
+    'WR1': 8,
+    'WR2': 8,
+    'RB1': 8,
+    'RB2': 8,
+    'FLEX': 9
 }
 
 
