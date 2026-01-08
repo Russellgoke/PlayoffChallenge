@@ -10,6 +10,7 @@ from utils import (
     load_projections,
     load_my_team,
     get_team_play_probability,
+    get_output_path,
 )
 
 # Import VOT functions
@@ -221,7 +222,7 @@ def export_with_vor(players, baselines, filename, my_team_names=None, my_team_by
     # Sort by VOR
     players.sort(key=lambda x: x['vor'], reverse=True)
     
-    output_file = filename.replace('.csv', '_vor.csv')
+    output_file = get_output_path(filename.replace('.csv', '_vor.csv'))
     
     # Determine fieldnames based on whether we have VOT
     if has_vot:
@@ -329,7 +330,7 @@ def main():
     print("VOR FILES GENERATED:")
     print("=" * 60)
     for week_info in PLAYOFF_WEEKS.values():
-        vor_file = week_info['filename'].replace('.csv', '_vor.csv')
+        vor_file = get_output_path(week_info['filename'].replace('.csv', '_vor.csv'))
         print(f"  - {vor_file}")
     
     return all_baselines

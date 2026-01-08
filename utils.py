@@ -4,6 +4,53 @@ Shared functions used across multiple calculation scripts.
 """
 
 import csv
+import os
+
+# Output directory for generated CSV files
+OUTPUT_DIR = 'output'
+# Input directory for input text files
+INPUT_DIR = 'input'
+
+
+def get_output_path(filename):
+    """
+    Get the output path for a CSV file.
+    Creates the output directory if it doesn't exist.
+    
+    Args:
+        filename: Name of the output file (e.g., 'draft_value.csv')
+    
+    Returns:
+        Path to the file in the output directory
+    """
+    # Create output directory if it doesn't exist
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+    
+    return os.path.join(OUTPUT_DIR, filename)
+
+
+def get_input_path(filename):
+    """
+    Get the input path for a text file.
+    Creates the input directory if it doesn't exist.
+    
+    Args:
+        filename: Name of the input file (e.g., 'my_team.txt')
+    
+    Returns:
+        Path to the file in the input directory (or root if not found in input)
+    """
+    # Create input directory if it doesn't exist
+    if not os.path.exists(INPUT_DIR):
+        os.makedirs(INPUT_DIR)
+    
+    # Try input directory first, then root
+    filepath = os.path.join(INPUT_DIR, filename)
+    if not os.path.exists(filepath):
+        filepath = filename
+    
+    return filepath
 
 
 def parse_pct(s):
@@ -23,6 +70,7 @@ def load_team_odds(filename='teamodds.csv', verbose=False):
     
     Args:
         filename: Path to team odds CSV file
+                  Checks input/ folder first, then root
         verbose: If True, print loaded odds
     
     Returns:
@@ -33,8 +81,11 @@ def load_team_odds(filename='teamodds.csv', verbose=False):
     """
     team_odds = {}
     
+    # Try input directory first, then root
+    filepath = get_input_path(filename)
+    
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 team = row['Team'].strip()
@@ -96,14 +147,18 @@ def load_my_team(filename='my_team.txt'):
     
     Args:
         filename: Path to team file (one player name per line, # for comments)
+                  Checks input/ folder first, then root
     
     Returns:
         List of player names
     """
     my_team = []
     
+    # Try input directory first, then root
+    filepath = get_input_path(filename)
+    
     try:
-        with open(filename, 'r', encoding='utf-8-sig') as f:
+        with open(filepath, 'r', encoding='utf-8-sig') as f:
             for line in f:
                 line = line.strip()
                 # Skip empty lines and comments
@@ -146,15 +201,20 @@ def load_total_values(filename='total_playoff_value.csv'):
     Load total playoff values from CSV.
     
     Args:
-        filename: Path to total playoff value CSV file
+        filename: Path to total playoff value CSV file (checks output/ if not found in root)
     
     Returns:
         List of player dicts with keys: name, position, team, total_vor, total_points
     """
     players = []
     
+    # Try output directory first, then root
+    filepath = get_output_path(filename)
+    if not os.path.exists(filepath):
+        filepath = filename
+    
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 players.append({
@@ -176,14 +236,18 @@ def load_drafted_players(filename='players_drafted.txt'):
     
     Args:
         filename: Path to drafted players file (comma or newline separated)
+                  Checks input/ folder first, then root
     
     Returns:
         List of player names
     """
     drafted = []
     
+    # Try input directory first, then root
+    filepath = get_input_path(filename)
+    
     try:
-        with open(filename, 'r', encoding='utf-8-sig') as f:  # utf-8-sig handles BOM
+        with open(filepath, 'r', encoding='utf-8-sig') as f:  # utf-8-sig handles BOM
             content = f.read()
             # Split by comma or newline and strip whitespace
             names = []
@@ -206,7 +270,7 @@ def load_vor_file(filename):
     Load VOR data from CSV file.
     
     Args:
-        filename: Path to VOR CSV file
+        filename: Path to VOR CSV file (checks output/ if not found in root)
     
     Returns:
         Dict mapping player names to player data with keys:
@@ -214,8 +278,13 @@ def load_vor_file(filename):
     """
     players = {}
     
+    # Try output directory first, then root
+    filepath = get_output_path(filename)
+    if not os.path.exists(filepath):
+        filepath = filename
+    
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
+        with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 name = row['name']

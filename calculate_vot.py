@@ -10,6 +10,7 @@ from utils import (
     load_projections,
     load_my_team,
     get_team_play_probability,
+    get_output_path,
 )
 
 # Playoff weeks and their corresponding odds columns
@@ -308,7 +309,7 @@ def main():
             total_vot[key]['total_points'] += p['half_ppr_points'] * p['play_prob']
         
         # Export weekly VOT
-        output_file = filename.replace('.csv', '_vot.csv')
+        output_file = get_output_path(filename.replace('.csv', '_vot.csv'))
         players.sort(key=lambda x: x['vot'], reverse=True)
         
         with open(output_file, 'w', newline='', encoding='utf-8') as f:
@@ -339,7 +340,8 @@ def main():
     total_list = list(total_vot.values())
     total_list.sort(key=lambda x: x['total_vot'], reverse=True)
     
-    with open('total_vot.csv', 'w', newline='', encoding='utf-8') as f:
+    total_vot_file = get_output_path('total_vot.csv')
+    with open(total_vot_file, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=[
             'name', 'position', 'team', 'total_vot', 'total_points'
         ])
@@ -365,7 +367,7 @@ def main():
               f"{p['total_vot']:<12.2f} {p['total_points']:<12.2f} {on_team}")
     
     print("\n* = On my team")
-    print(f"\nExported total VOT to: total_vot.csv")
+    print(f"\nExported total VOT to: {total_vot_file}")
     
     return total_list
 

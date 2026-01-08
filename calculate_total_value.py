@@ -8,6 +8,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 from utils import (
     load_team_odds,
     load_vor_file,
+    get_output_path,
 )
 
 # Playoff weeks and their VOR files with corresponding odds column
@@ -159,7 +160,7 @@ def main():
             print(f"{i:<5} {p['name']:<25} {p['team']:<5} {p['total_vor']:<10.2f} {p['total_points']:<12.2f}")
     
     # Export to CSV
-    output_file = 'total_playoff_value.csv'
+    output_file = get_output_path('total_playoff_value.csv')
     with open(output_file, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=[
             'name', 'position', 'team', 'total_vor', 'total_points',

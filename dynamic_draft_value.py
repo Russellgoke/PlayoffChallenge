@@ -8,6 +8,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 from utils import (
     load_total_values,
     load_drafted_players,
+    get_output_path,
 )
 
 
@@ -200,7 +201,7 @@ def main():
             print(f"  {pos_name}: {best['name']:<25} - {best['total_vor']:.2f} VOR, {best['draft_value']:.2f} DV")
     
     # Export to CSV (only available players, sorted by total_vor)
-    output_file = 'draft_value.csv'
+    output_file = get_output_path('draft_value.csv')
     available_players.sort(key=lambda x: x['total_vor'], reverse=True)
     
     with open(output_file, 'w', newline='', encoding='utf-8') as f:
