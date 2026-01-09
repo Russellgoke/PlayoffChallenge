@@ -1,5 +1,8 @@
 import csv
 import sys
+import os
+import random
+import hashlib
 from collections import defaultdict
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -12,11 +15,12 @@ from utils import (
     get_team_play_probability,
     get_output_path,
     ensure_projections_exist,
+    calculate_all_baselines,
 )
 
 # Playoff weeks and their corresponding odds columns
 PLAYOFF_WEEKS = {
-    'Wild Card': {'filename': 'playoff_projections_wildcard.csv', 'odds_col': None},
+    'Wild Card': {'filename': 'playoff_projections_wildcard.csv', 'odds_col': 'Wild Card Appearance'},
     'Divisional': {'filename': 'playoff_projections_divisional.csv', 'odds_col': 'DIV APP'},
     'Conference': {'filename': 'playoff_projections_conference.csv', 'odds_col': 'Conf App'},
     'Super Bowl': {'filename': 'playoff_projections_superbowl.csv', 'odds_col': 'Conf Win'},
@@ -32,6 +36,178 @@ ROSTER_SLOTS = {
 }
 
 
+
+
+_BASELINE_SIM_CACHE = {}
+
+
+def _stable_int_seed(s: str) -> int:
+    """Deterministic 32-bit-ish seed from a string (stable across runs)."""
+    h = hashlib.md5(s.encode('utf-8')).digest()
+    return int.from_bytes(h[:8], byteorder='little', signed=False) % (2**32)
+
+
+def _flatten_my_roster(my_team_by_position):
+    """Flatten my roster dict into a stable list of players with play_prob present."""
+    roster = []
+    for pos, players in (my_team_by_position or {}).items():
+        for p in players:
+            # Only include standard fantasy positions we can actually start
+            if p.get('position') in ('QB', 'RB', 'WR', 'TE'):
+                roster.append(p)
+    # Stable ordering for caching
+    roster.sort(key=lambda x: (x.get('position', ''), x.get('name', '')))
+    return roster
+
+
+def _roster_fingerprint(roster_players):
+    """Hashable fingerprint for caching baseline simulations."""
+    fp = []
+    for p in roster_players:
+        fp.append((
+            p.get('name', ''),
+            p.get('position', ''),
+            p.get('team', ''),
+            round(float(p.get('half_ppr_points', 0.0)), 4),
+            round(float(p.get('play_prob', 0.0)), 6),
+        ))
+    return tuple(fp)
+
+
+def _optimal_lineup_points(mask, positions, points, baselines, extra_pos=None, extra_points=0.0):
+    """
+    Given an availability bitmask for the roster, compute optimal lineup points using
+    raw projected points for selection (only players who "play" are eligible).
+    
+    Empty slots are filled with baseline replacement values.
+    
+    Args:
+        mask: Bitmask of which roster players are available
+        positions: List of positions for each roster player
+        points: List of projected points for each roster player
+        baselines: Dict of baseline values by position slot (QB, RB1, RB2, WR1, WR2, TE, FLEX)
+        extra_pos: Position of extra player to consider (optional)
+        extra_points: Points of extra player (optional)
+    """
+    qbs, rbs, wrs, tes = [], [], [], []
+
+    for i, pos in enumerate(positions):
+        if (mask >> i) & 1:
+            pts = points[i]
+            if pos == 'QB':
+                qbs.append(pts)
+            elif pos == 'RB':
+                rbs.append(pts)
+            elif pos == 'WR':
+                wrs.append(pts)
+            elif pos == 'TE':
+                tes.append(pts)
+
+    if extra_pos in ('QB', 'RB', 'WR', 'TE') and extra_points > 0:
+        if extra_pos == 'QB':
+            qbs.append(extra_points)
+        elif extra_pos == 'RB':
+            rbs.append(extra_points)
+        elif extra_pos == 'WR':
+            wrs.append(extra_points)
+        elif extra_pos == 'TE':
+            tes.append(extra_points)
+
+    qbs.sort(reverse=True)
+    rbs.sort(reverse=True)
+    wrs.sort(reverse=True)
+    tes.sort(reverse=True)
+
+    # Fill positions, using baselines for empty slots
+    qb = qbs[0] if qbs else baselines.get('QB', 0.0)
+    
+    # RB slots (need 2)
+    rb1 = rbs[0] if len(rbs) >= 1 else baselines.get('RB1', 0.0)
+    rb2 = rbs[1] if len(rbs) >= 2 else baselines.get('RB2', 0.0)
+    
+    # WR slots (need 2)
+    wr1 = wrs[0] if len(wrs) >= 1 else baselines.get('WR1', 0.0)
+    wr2 = wrs[1] if len(wrs) >= 2 else baselines.get('WR2', 0.0)
+    
+    # TE slot
+    te = tes[0] if tes else baselines.get('TE', 0.0)
+
+    # FLEX: best remaining player, or baseline if none
+    flex_candidates = rbs[2:] + wrs[2:] + tes[1:]
+    flex = max(flex_candidates) if flex_candidates else baselines.get('FLEX', 0.0)
+
+    return qb + rb1 + rb2 + wr1 + wr2 + te + flex
+
+
+def _get_or_build_baseline_sim(my_team_by_position, team_odds, odds_col, baselines):
+    """
+    Build (and cache) baseline Monte Carlo simulation for the current roster + round.
+
+    Args:
+        my_team_by_position: Dict of position -> list of player dicts
+        team_odds: Dict of team advancement odds
+        odds_col: Column name for odds
+        baselines: Dict of baseline values by position slot (from calculate_all_baselines)
+
+    Returns dict with:
+      - names_set
+      - positions, points, probs
+      - masks (len n_sims)
+      - baseline_scores (len n_sims)
+      - baseline_expected
+      - n_sims
+      - baselines
+    """
+    roster_players = _flatten_my_roster(my_team_by_position)
+
+    n_sims = int(os.environ.get('VOT_SIMULATIONS', '4000'))
+    n_sims = max(500, min(n_sims, 50000))
+
+    # Include baselines in cache key since they affect scores
+    baselines_tuple = tuple(sorted(baselines.items()))
+    fp = _roster_fingerprint(roster_players)
+    cache_key = (odds_col, fp, n_sims, baselines_tuple)
+    cached = _BASELINE_SIM_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    names_set = {p.get('name', '') for p in roster_players}
+    positions = [p.get('position') for p in roster_players]
+    points = [float(p.get('half_ppr_points', 0.0)) for p in roster_players]
+
+    # Use play_prob already computed on my roster entries (via get_my_team_players_by_position)
+    probs = [float(p.get('play_prob', 0.0)) for p in roster_players]
+
+    seed = _stable_int_seed(f"{odds_col}|{fp}|{n_sims}")
+    rng = random.Random(seed)
+
+    masks = []
+    baseline_scores = []
+
+    for _ in range(n_sims):
+        mask = 0
+        for i, prob in enumerate(probs):
+            if rng.random() < prob:
+                mask |= (1 << i)
+        masks.append(mask)
+        baseline_scores.append(_optimal_lineup_points(mask, positions, points, baselines))
+
+    baseline_expected = sum(baseline_scores) / float(n_sims) if n_sims else 0.0
+
+    sim = {
+        'names_set': names_set,
+        'positions': positions,
+        'points': points,
+        'probs': probs,
+        'masks': masks,
+        'baseline_scores': baseline_scores,
+        'baseline_expected': baseline_expected,
+        'n_sims': n_sims,
+        'odds_col': odds_col,
+        'baselines': baselines,
+    }
+    _BASELINE_SIM_CACHE[cache_key] = sim
+    return sim
 
 
 def get_my_team_players_by_position(my_team_names, players, team_odds, odds_col):
@@ -110,160 +286,92 @@ def calculate_availability_probs(players):
     return (prob_0, prob_1, prob_2)
 
 
-def calculate_vot_for_player(new_player, my_team_by_position, team_odds, odds_col):
+def calculate_vot_for_player(new_player, my_team_by_position, team_odds, odds_col, baselines):
     """
     Calculate Value Over My Team for a single player.
     
-    VOT represents the marginal value of adding this player to my roster.
+    New definition (marginal lineup value):
+      VOT = E[optimal roster points WITH this player] - E[optimal roster points WITHOUT this player]
+
+    Where "optimal roster points" for a round is computed by:
+      - sampling which of your roster players actually play in that round
+      - choosing starters by RAW projected points among those who play (QB, RBx2, WRx2, TE, FLEX)
+      - empty slots are filled with baseline replacement values
+      - scoring is raw points (since availability is already sampled)
     
-    Logic by position:
-    - QB/TE: Compare to your starter (1st player at position)
-    - RB/WR: Compare to your 2nd best at position OR your FLEX (after top 2 RBs and top 2 WRs), whichever is worse
+    Args:
+        new_player: Player dict to evaluate
+        my_team_by_position: Dict of position -> list of player dicts
+        team_odds: Dict of team advancement odds
+        odds_col: Column name for odds
+        baselines: Dict of baseline values by position slot (from calculate_all_baselines)
     """
-    pos = new_player['position']
-    new_points = new_player['half_ppr_points']
-    new_p = get_team_play_probability(new_player['team'], team_odds, odds_col)
-    
-    # No value if team won't play
-    if new_p == 0:
+    pos = new_player.get('position')
+    if pos not in ('QB', 'RB', 'WR', 'TE'):
         return 0.0
-    
-    # Get all my team players at this position, sorted by expected value
-    my_position_players = my_team_by_position.get(pos, [])
-    
-    if pos == 'QB':
-        # QB: Compare to ALL players better than new player
-        
-        # Find all players better than the new player (by projected points)
-        better_players = [p for p in my_position_players if p['half_ppr_points'] > new_points]
-        
-        if not better_players:
-            # New player is better than all my players at this position - full value
-            return new_p * new_points
-        
-        # Calculate probability that ALL better players are eliminated
-        prob_all_eliminated = 1.0
-        for better_p in better_players:
-            prob_all_eliminated *= (1 - better_p['play_prob'])
-        # All better players eliminated - new player provides full value
-        return prob_all_eliminated * new_p * new_points
-    
-    elif pos in ['RB', 'WR']:
-        # RB/WR: Can start if:
-        # - 0 or 1 better players available in their position, OR
-        # - 2 better players available in their position AND (0, 1, or 2 better players 
-        #   available in the other RB/WR position) AND (0 or 1 better TE available)
-        
-        # Find all players better than the new player (by projected points) at this position
-        better_players_this_pos = [p for p in my_position_players if p['half_ppr_points'] > new_points]
-        
-        if not better_players_this_pos:
-            # New player is better than all my players at this position - full value
-            return new_p * new_points
-        
-        # Get availability probabilities for this position
-        prob_0_this, prob_1_this, prob_2_this = calculate_availability_probs(better_players_this_pos)
-        
-        # Case 1: 0 or 1 better players available in this position - can start at position
-        prob_start_at_position = prob_0_this + prob_1_this
-        
-        # Case 2: 2 better players available in this position - can only start if FLEX eligible
-        # Need to check other positions
-        other_pos = 'WR' if pos == 'RB' else 'RB'
-        other_position_players = my_team_by_position.get(other_pos, [])
-        
-        # Find better players in the other RB/WR position
-        better_players_other_pos = [p for p in other_position_players if p['half_ppr_points'] > new_points]
-        prob_0_other, prob_1_other, prob_2_other = calculate_availability_probs(better_players_other_pos)
-        
-        # Find better TEs
-        te_players = my_team_by_position.get('TE', [])
-        better_tes = [p for p in te_players if p['half_ppr_points'] > new_points]
-        prob_0_te, prob_1_te, prob_2_te = calculate_availability_probs(better_tes)
-        
-        # For FLEX: Need (0, 1, or 2 better in other RB/WR) AND (0 or 1 better TE)
-        prob_flex_eligible = (prob_0_other + prob_1_other + prob_2_other) * (prob_0_te + prob_1_te)
-        
-        # Total probability of starting:
-        # - Start at position: prob_0_this + prob_1_this
-        # - Start as FLEX (when 2 better in position): prob_2_this * prob_flex_eligible
-        prob_start = prob_start_at_position + (prob_2_this * prob_flex_eligible)
-        
-        return prob_start * new_p * new_points
-    
-    elif pos == 'TE':
-        # TE: Can start if 0 better TEs available (non-FLEX start)
-        # Otherwise can only be FLEX if eligible
-        
-        # Find all players better than the new player (by projected points)
-        better_players = [p for p in my_position_players if p['half_ppr_points'] > new_points]
-        
-        if not better_players:
-            # New player is better than all my TEs - full value
-            return new_p * new_points
-        
-        # Get availability probabilities for TE
-        prob_0_te, prob_1_te = calculate_availability_probs(better_players)
-        
-        # Case 1: 0 better TEs available - can start at TE position
-        prob_start_at_te = prob_0_te
-        
-        # Case 2: 1+ better TEs available - can only start if FLEX eligible
-        # Need to check RB and WR positions
-        rb_players = my_team_by_position.get('RB', [])
-        wr_players = my_team_by_position.get('WR', [])
-        
-        # Find better RBs and WRs
-        better_rbs = [p for p in rb_players if p['half_ppr_points'] > new_points]
-        better_wrs = [p for p in wr_players if p['half_ppr_points'] > new_points]
-        
-        prob_0_rb, prob_1_rb, prob_2_rb = calculate_availability_probs(better_rbs)
-        prob_0_wr, prob_1_wr, prob_2_wr = calculate_availability_probs(better_wrs)
-        
-        # For FLEX: Need (0, 1, or 2 better RBs) AND (0, 1, or 2 better WRs)
-        prob_flex_eligible = (prob_0_rb + prob_1_rb + prob_2_rb) * (prob_0_wr + prob_1_wr + prob_2_wr)
-        
-        # Total probability of starting:
-        # - Start at TE: prob_0_te
-        # - Start as FLEX (when 1+ better TEs): (prob_1_te + prob_2_te) * prob_flex_eligible
-        prob_start = prob_start_at_te + (prob_1_te * prob_flex_eligible)
-        
-        return prob_start * new_p * new_points
-    
-    else:
-        # Unknown position - no value
-        raise ValueError(f"Unknown position: {pos}")
+
+    # If player is already on my roster, adding them provides no marginal value
+    baseline_sim = _get_or_build_baseline_sim(my_team_by_position, team_odds, odds_col, baselines)
+    if new_player.get('name', '') in baseline_sim['names_set']:
+        return 0.0
+
+    new_points = float(new_player.get('half_ppr_points', 0.0))
+    if new_points <= 0:
+        return 0.0
+
+    new_p = get_team_play_probability(new_player.get('team', ''), team_odds, odds_col)
+    if new_p <= 0:
+        return 0.0
+
+    # Use a deterministic RNG per (player, round) so results are stable across runs
+    seed = _stable_int_seed(f"{odds_col}|{new_player.get('name','')}|{new_player.get('team','')}|{new_points:.4f}|{baseline_sim['n_sims']}")
+    rng = random.Random(seed)
+
+    positions = baseline_sim['positions']
+    points = baseline_sim['points']
+    masks = baseline_sim['masks']
+    baseline_scores = baseline_sim['baseline_scores']
+    n_sims = baseline_sim['n_sims']
+
+    delta_sum = 0.0
+    for i in range(n_sims):
+        if rng.random() < new_p:
+            with_score = _optimal_lineup_points(masks[i], positions, points, baselines, extra_pos=pos, extra_points=new_points)
+            delta_sum += (with_score - baseline_scores[i])
+        # else: delta += 0 (same lineup as baseline)
+
+    return delta_sum / float(n_sims) if n_sims else 0.0
 
 
 def calculate_weekly_vot(players, my_team_names, team_odds, odds_col, round_name):
     """Calculate VOT for all players for a single week"""
     
+    # Calculate baselines first (using raw projected points from all players)
+    baselines = calculate_all_baselines(players, team_odds, odds_col, round_name, verbose=True)
+    
     # Get all my team players grouped by position
     my_team_by_position = get_my_team_players_by_position(my_team_names, players, team_odds, odds_col)
     
     # Print my team players by position for this week
-    print(f"\n{'='*60}")
-    print(f"MY TEAM - {round_name.upper()}")
-    print(f"{'='*60}")
+    print(f"\n  MY TEAM:")
     
     for pos in ['QB', 'RB', 'WR', 'TE']:
         pos_players = my_team_by_position.get(pos, [])
         if pos_players:
-            print(f"\n  {pos}:")
+            print(f"    {pos}:")
             for p in pos_players:
-                print(f"    {p['name']:<25} ({p['team']}) - "
-                      f"{p['half_ppr_points']:.2f} pts, {p['play_prob']:.1%} play prob, "
-                      f"{p['expected_points']:.2f} EV")
+                print(f"      {p['name']:<25} ({p['team']}) - "
+                      f"{p['half_ppr_points']:.2f} pts, {p['play_prob']:.1%} play prob")
         else:
-            print(f"\n  {pos}: (empty)")
+            print(f"    {pos}: (empty - will use baseline {baselines.get(pos, baselines.get(pos + '1', 0)):.2f} pts)")
     
     # Calculate VOT for each player
     for player in players:
-        vot = calculate_vot_for_player(player, my_team_by_position, team_odds, odds_col)
+        vot = calculate_vot_for_player(player, my_team_by_position, team_odds, odds_col, baselines)
         player['vot'] = vot
         player['play_prob'] = get_team_play_probability(player['team'], team_odds, odds_col)
     
-    return players
+    return players, baselines
 
 
 def main():
@@ -316,7 +424,7 @@ def main():
                 print(f"  - {name}")
         
         # Calculate VOT for this week
-        players = calculate_weekly_vot(players, my_team_names, team_odds, odds_col, round_name)
+        players, baselines = calculate_weekly_vot(players, my_team_names, team_odds, odds_col, round_name)
         
         all_weekly_vot[round_name] = players
         

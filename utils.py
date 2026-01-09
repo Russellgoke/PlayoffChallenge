@@ -75,6 +75,7 @@ def load_team_odds(filename='teamodds.csv', verbose=False):
     
     Returns:
         Dict mapping team names to odds dict with keys:
+        - 'Wild Card Appearance': Wild Card Appearance probability
         - 'DIV APP': Divisional Appearance probability
         - 'Conf App': Conference Appearance probability
         - 'Conf Win': Conference Win probability
@@ -88,17 +89,24 @@ def load_team_odds(filename='teamodds.csv', verbose=False):
         with open(filepath, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                team = row['Team'].strip()
+                # Normalize row keys by stripping whitespace for easier access
+                normalized_row = {k.strip(): v for k, v in row.items()}
+                
+                team = normalized_row.get('Team', '').strip()
+                if not team:
+                    continue
+                    
                 team_odds[team] = {
-                    'DIV APP': parse_pct(row.get('Divisional Appearance', '0%')),
-                    'Conf App': parse_pct(row.get('Conference Appearance', '0%')),
-                    'Conf Win': parse_pct(row.get('Conference Win', '0%')),
+                    'Wild Card Appearance': parse_pct(normalized_row.get('Wild Card Appearance', '0%')),
+                    'DIV APP': parse_pct(normalized_row.get('Divisional Appearance', '0%')),
+                    'Conf App': parse_pct(normalized_row.get('Conference Appearance', '0%')),
+                    'Conf Win': parse_pct(normalized_row.get('Conference Win', '0%')),
                 }
         
         if verbose:
             print(f"Loaded odds for {len(team_odds)} teams:")
             for team, odds in team_odds.items():
-                print(f"  {team}: DIV={odds['DIV APP']:.1%}, CONF={odds['Conf App']:.1%}, SB={odds['Conf Win']:.1%}")
+                print(f"  {team}: WC={odds.get('Wild Card Appearance', 0):.1%}, DIV={odds['DIV APP']:.1%}, CONF={odds['Conf App']:.1%}, SB={odds['Conf Win']:.1%}")
         
         return team_odds
         
@@ -286,13 +294,14 @@ def get_team_play_probability(team, team_odds, odds_col):
     Args:
         team: Team abbreviation (e.g., 'SEA', 'LAR')
         team_odds: Dict of team odds (from load_team_odds)
-        odds_col: Column name for odds ('DIV APP', 'Conf App', 'Conf Win') or None for Wild Card
+        odds_col: Column name for odds ('Wild Card Appearance', 'DIV APP', 'Conf App', 'Conf Win')
+                  or None for backwards compatibility (will use special Wild Card logic)
     
     Returns:
         Float probability (0.0 to 1.0)
     """
     if odds_col is None:
-        # Wild Card - teams with 100% DIV APP have a bye (don't play Wild Card)
+        # Backwards compatibility: Wild Card - teams with 100% DIV APP have a bye (don't play Wild Card)
         div_app = team_odds.get(team, {}).get('DIV APP', 0.0)
         if div_app >= 1.0:
             # Team has a bye - they don't play Wild Card
@@ -349,7 +358,7 @@ def load_total_values(filename='total_playoff_value.csv'):
         filename: Path to total playoff value CSV file (checks output/ if not found in root)
     
     Returns:
-        List of player dicts with keys: name, position, team, total_vor, total_points
+        List of player dicts with keys: name, position, team, total_vot, total_points
     """
     players = []
     
@@ -366,7 +375,7 @@ def load_total_values(filename='total_playoff_value.csv'):
                     'name': row['name'],
                     'position': row['position'],
                     'team': row['team'],
-                    'total_vor': float(row['total_vor']),
+                    'total_vot': float(row['total_vot']),
                     'total_points': float(row['total_points']),
                 })
         return players
@@ -443,4 +452,179 @@ def load_vor_file(filename):
     except Exception as e:
         print(f"Error loading {filename}: {e}")
         return {}
+
+
+def load_vot_file(filename):
+    """
+    Load VOT data from CSV file.
+    
+    Args:
+        filename: Path to VOT CSV file (checks output/ if not found in root)
+    
+    Returns:
+        Dict mapping player names to player data with keys:
+        position, team, half_ppr_points, vot
+    """
+    players = {}
+    
+    # Try output directory first, then root
+    filepath = get_output_path(filename)
+    if not os.path.exists(filepath):
+        filepath = filename
+    
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                name = row['name']
+                players[name] = {
+                    'position': row['position'],
+                    'team': row['team'],
+                    'half_ppr_points': float(row['half_ppr_points']),
+                    'vot': float(row['vot']),
+                }
+        return players
+    except Exception as e:
+        print(f"Error loading {filename}: {e}")
+        return {}
+
+
+# Replacement value target ranks for each position slot
+REPLACEMENT_RANKS = {
+    'QB': 7,
+    'TE': 7,
+    'WR1': 7,
+    'WR2': 12,
+    'RB1': 7,
+    'RB2': 12,
+    'FLEX': 27
+}
+
+
+def calculate_probability_weighted_baseline(players, position, target_rank, team_odds, odds_col):
+    """
+    Calculate the probability-weighted baseline for a position.
+    
+    Args:
+        players: List of player dicts with 'half_ppr_points'
+        position: Position to filter (e.g., 'QB', 'RB', 'WR', 'TE') or 'FLEX' for RB/WR/TE
+        target_rank: The target rank for replacement (e.g., 3 for 3rd best available)
+        team_odds: Dict of team advancement odds
+        odds_col: Column name for odds (e.g., 'Wild Card Appearance', 'DIV APP', 'Conf App', 'Conf Win')
+    
+    Returns:
+        Tuple of (baseline_value, baseline_player_name)
+    """
+    value_field = 'half_ppr_points'
+    
+    if position == 'FLEX':
+        # FLEX is the best available among RB/WR/TE
+        filtered = [p for p in players if p.get('position') in ['RB', 'WR', 'TE']]
+    else:
+        filtered = [p for p in players if p.get('position') == position]
+    
+    # Sort by value (descending)
+    filtered.sort(key=lambda x: x.get(value_field, 0), reverse=True)
+    
+    if not filtered:
+        return 0.0, "N/A"
+    
+    # Calculate cumulative probability
+    cumulative_prob = 0.0
+    baseline_value = 0.0
+    baseline_player = "N/A"
+    
+    for player in filtered:
+        team = player['team']
+        
+        # Get team's probability of being in this round
+        prob = get_team_play_probability(team, team_odds, odds_col)
+        
+        cumulative_prob += prob
+        
+        # When we reach the target rank, this is our baseline
+        if cumulative_prob >= target_rank:
+            baseline_value = player.get(value_field, 0)
+            baseline_player = player['name']
+            break
+    
+    # If we didn't reach target rank, use the last player
+    if baseline_value == 0 and filtered:
+        baseline_value = filtered[-1].get(value_field, 0)
+        baseline_player = filtered[-1]['name']
+    
+    return baseline_value, baseline_player
+
+
+def calculate_all_baselines(players, team_odds, odds_col, round_name=None, verbose=True):
+    """
+    Calculate baselines for all position slots using raw projected points.
+    
+    Args:
+        players: List of player dicts
+        team_odds: Dict of team advancement odds
+        odds_col: Column name for odds
+        round_name: Name of round for display (optional)
+        verbose: If True, print baselines
+    
+    Returns:
+        Dict with keys: QB, TE, WR1, WR2, RB1, RB2, FLEX
+    """
+    baselines = {}
+    
+    if verbose and round_name:
+        print(f"\n{'='*60}")
+        print(f"REPLACEMENT BASELINES - {round_name.upper()}")
+        print(f"{'='*60}")
+    
+    # QB
+    val, name = calculate_probability_weighted_baseline(
+        players, 'QB', REPLACEMENT_RANKS['QB'], team_odds, odds_col)
+    baselines['QB'] = val
+    if verbose:
+        print(f"  QB  (rank {REPLACEMENT_RANKS['QB']}): {val:6.2f} pts - {name}")
+    
+    # TE
+    val, name = calculate_probability_weighted_baseline(
+        players, 'TE', REPLACEMENT_RANKS['TE'], team_odds, odds_col)
+    baselines['TE'] = val
+    if verbose:
+        print(f"  TE  (rank {REPLACEMENT_RANKS['TE']}): {val:6.2f} pts - {name}")
+    
+    # WR1
+    val, name = calculate_probability_weighted_baseline(
+        players, 'WR', REPLACEMENT_RANKS['WR1'], team_odds, odds_col)
+    baselines['WR1'] = val
+    if verbose:
+        print(f"  WR1 (rank {REPLACEMENT_RANKS['WR1']}): {val:6.2f} pts - {name}")
+    
+    # WR2
+    val, name = calculate_probability_weighted_baseline(
+        players, 'WR', REPLACEMENT_RANKS['WR2'], team_odds, odds_col)
+    baselines['WR2'] = val
+    if verbose:
+        print(f"  WR2 (rank {REPLACEMENT_RANKS['WR2']}): {val:6.2f} pts - {name}")
+    
+    # RB1
+    val, name = calculate_probability_weighted_baseline(
+        players, 'RB', REPLACEMENT_RANKS['RB1'], team_odds, odds_col)
+    baselines['RB1'] = val
+    if verbose:
+        print(f"  RB1 (rank {REPLACEMENT_RANKS['RB1']}): {val:6.2f} pts - {name}")
+    
+    # RB2
+    val, name = calculate_probability_weighted_baseline(
+        players, 'RB', REPLACEMENT_RANKS['RB2'], team_odds, odds_col)
+    baselines['RB2'] = val
+    if verbose:
+        print(f"  RB2 (rank {REPLACEMENT_RANKS['RB2']}): {val:6.2f} pts - {name}")
+    
+    # FLEX
+    val, name = calculate_probability_weighted_baseline(
+        players, 'FLEX', REPLACEMENT_RANKS['FLEX'], team_odds, odds_col)
+    baselines['FLEX'] = val
+    if verbose:
+        print(f"  FLEX (rank {REPLACEMENT_RANKS['FLEX']}): {val:6.2f} pts - {name}")
+    
+    return baselines
 

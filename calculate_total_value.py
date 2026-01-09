@@ -7,48 +7,50 @@ sys.stdout.reconfigure(encoding='utf-8')
 # Import shared utilities
 from utils import (
     load_team_odds,
-    load_vor_file,
+    load_vot_file,
     get_output_path,
-    ensure_vor_files_exist,
 )
 
-# Playoff weeks and their VOR files with corresponding odds column
+# Import calculate_vot to run it directly
+import calculate_vot
+
+# Playoff weeks and their VOT files with corresponding odds column
 PLAYOFF_WEEKS = [
-    {'name': 'Wild Card', 'vor_file': 'playoff_projections_wildcard_vor.csv', 'odds_col': None},
-    {'name': 'Divisional', 'vor_file': 'playoff_projections_divisional_vor.csv', 'odds_col': 'DIV APP'},
-    {'name': 'Conference', 'vor_file': 'playoff_projections_conference_vor.csv', 'odds_col': 'Conf App'},
-    {'name': 'Super Bowl', 'vor_file': 'playoff_projections_superbowl_vor.csv', 'odds_col': 'Conf Win'},
+    {'name': 'Wild Card', 'vot_file': 'playoff_projections_wildcard_vot.csv', 'odds_col': 'Wild Card Appearance'},
+    {'name': 'Divisional', 'vot_file': 'playoff_projections_divisional_vot.csv', 'odds_col': 'DIV APP'},
+    {'name': 'Conference', 'vot_file': 'playoff_projections_conference_vot.csv', 'odds_col': 'Conf App'},
+    {'name': 'Super Bowl', 'vot_file': 'playoff_projections_superbowl_vot.csv', 'odds_col': 'Conf Win'},
 ]
 
 
 
 
 def calculate_total_value(team_odds):
-    """Calculate total playoff value for each player weighted by play probability"""
+    """Calculate total playoff value for each player using VOT (Value Over Team)"""
     
     # Dictionary to accumulate player values
     player_totals = defaultdict(lambda: {
         'position': '',
         'team': '',
-        'weekly_vor': {},
+        'weekly_vot': {},
         'weekly_prob': {},
-        'total_vor': 0,
+        'total_vot': 0,
         'total_points': 0,
     })
     
-    print("Loading VOR data for each week...")
+    print("Loading VOT data for each week...")
     
     for week_info in PLAYOFF_WEEKS:
         week_name = week_info['name']
-        vor_file = week_info['vor_file']
+        vot_file = week_info['vot_file']
         odds_col = week_info['odds_col']
         
-        players = load_vor_file(vor_file)
+        players = load_vot_file(vot_file)
         print(f"  {week_name}: {len(players)} players")
         
         for name, data in players.items():
             team = data['team']
-            vor = data['vor']
+            vot = data['vot']
             pts = data['half_ppr_points']
             
             # Skip players whose teams aren't in the playoffs
@@ -56,28 +58,24 @@ def calculate_total_value(team_odds):
                 continue
             
             # Get probability of playing this week
-            if odds_col is None:
-                # Wild Card - all playoff teams play (100%)
-                prob = 1.0
-            else:
-                prob = team_odds.get(team, {}).get(odds_col, 0.0)
+            prob = team_odds.get(team, {}).get(odds_col, 0.0)
             
             # Store player info
             player_totals[name]['position'] = data['position']
             player_totals[name]['team'] = team
-            player_totals[name]['weekly_vor'][week_name] = vor
+            player_totals[name]['weekly_vot'][week_name] = vot
             player_totals[name]['weekly_prob'][week_name] = prob
             player_totals[name]['weekly_pts'] = player_totals[name].get('weekly_pts', {})
             player_totals[name]['weekly_pts'][week_name] = pts
             
-            # Add weighted VOR to total (use max(0, vor) - you wouldn't start a negative VOR player)
-            effective_vor = max(0, vor)
-            weighted_vor = effective_vor * prob
-            player_totals[name]['total_vor'] += weighted_vor
+            # Add VOT to total (use max(0, vot) - you wouldn't start a negative VOT player)
+            # NOTE: VOT already includes play probability, so don't multiply by prob again
+            effective_vot = max(0, vot)
+            player_totals[name]['total_vot'] += effective_vot
             
-            # Also track weighted total points (using effective VOR logic)
-            # If VOR is negative, player wouldn't be started, so use 0 contribution
-            if vor > 0:
+            # Track weighted total points (raw points * probability)
+            # If VOT is negative, player wouldn't be started, so use 0 contribution
+            if vot > 0:
                 weighted_pts = pts * prob
             else:
                 weighted_pts = 0
@@ -91,8 +89,16 @@ def main():
     print("TOTAL PLAYOFF VALUE CALCULATOR")
     print("=" * 70)
     print()
-    print("Formula: Total Value = SUM(Week VOR × Probability of Playing That Week)")
+    print("Formula: Total Value = SUM(Weekly VOT)")
+    print("VOT = Value Over Team (marginal lineup value with baseline fill-in)")
     print()
+    
+    # Always run calculate_vot first to get fresh VOT data
+    print("Running VOT calculations...")
+    calculate_vot.main()
+    print("\n" + "=" * 70)
+    print("CALCULATING TOTAL PLAYOFF VALUE")
+    print("=" * 70 + "\n")
     
     # Load team odds
     print("Loading team advancement odds...")
@@ -100,52 +106,47 @@ def main():
     print(f"  Loaded odds for {len(team_odds)} teams")
     print()
     
-    # Check if VOR files exist, generate if needed
-    required_files = [week_info['vor_file'] for week_info in PLAYOFF_WEEKS]
-    if not ensure_vor_files_exist(required_files):
-        print("Warning: Some VOR files are missing. Continuing with available files...")
-    
     # Calculate total values
     player_totals = calculate_total_value(team_odds)
     print(f"\nCalculated totals for {len(player_totals)} players")
     
-    # Convert to list and sort by total VOR
+    # Convert to list and sort by total VOT
     players_list = []
     for name, data in player_totals.items():
         players_list.append({
             'name': name,
             'position': data['position'],
             'team': data['team'],
-            'total_vor': round(data['total_vor'], 2),
+            'total_vot': round(data['total_vot'], 2),
             'total_points': round(data['total_points'], 2),
-            'wc_vor': round(data['weekly_vor'].get('Wild Card', 0), 2),
-            'div_vor': round(data['weekly_vor'].get('Divisional', 0), 2),
-            'conf_vor': round(data['weekly_vor'].get('Conference', 0), 2),
-            'sb_vor': round(data['weekly_vor'].get('Super Bowl', 0), 2),
+            'wc_vot': round(data['weekly_vot'].get('Wild Card', 0), 2),
+            'div_vot': round(data['weekly_vot'].get('Divisional', 0), 2),
+            'conf_vot': round(data['weekly_vot'].get('Conference', 0), 2),
+            'sb_vot': round(data['weekly_vot'].get('Super Bowl', 0), 2),
             'wc_prob': data['weekly_prob'].get('Wild Card', 0),
             'div_prob': data['weekly_prob'].get('Divisional', 0),
             'conf_prob': data['weekly_prob'].get('Conference', 0),
             'sb_prob': data['weekly_prob'].get('Super Bowl', 0),
         })
     
-    # Sort by total VOR (descending)
-    players_list.sort(key=lambda x: x['total_vor'], reverse=True)
+    # Sort by total VOT (descending)
+    players_list.sort(key=lambda x: x['total_vot'], reverse=True)
     
     # Display top players overall
     print("\n" + "=" * 90)
-    print("TOP 50 PLAYERS BY TOTAL PLAYOFF VALUE")
+    print("TOP 50 PLAYERS BY TOTAL PLAYOFF VALUE (VOT)")
     print("=" * 90)
-    print(f"{'Rank':<5} {'Player':<25} {'Pos':<4} {'Team':<5} {'Total VOR':<10} {'WC':<8} {'DIV':<8} {'CONF':<8} {'SB':<8}")
+    print(f"{'Rank':<5} {'Player':<25} {'Pos':<4} {'Team':<5} {'Total VOT':<10} {'WC':<8} {'DIV':<8} {'CONF':<8} {'SB':<8}")
     print("-" * 90)
     
     for i, p in enumerate(players_list[:50], 1):
-        # Show weighted contributions (clamped to 0 - you wouldn't start negative VOR players)
-        wc_contrib = max(0, p['wc_vor']) * p['wc_prob']
-        div_contrib = max(0, p['div_vor']) * p['div_prob']
-        conf_contrib = max(0, p['conf_vor']) * p['conf_prob']
-        sb_contrib = max(0, p['sb_vor']) * p['sb_prob']
+        # Show VOT contributions (already probability-weighted, clamped to 0)
+        wc_contrib = max(0, p['wc_vot'])
+        div_contrib = max(0, p['div_vot'])
+        conf_contrib = max(0, p['conf_vot'])
+        sb_contrib = max(0, p['sb_vot'])
         
-        print(f"{i:<5} {p['name']:<25} {p['position']:<4} {p['team']:<5} {p['total_vor']:<10.2f} "
+        print(f"{i:<5} {p['name']:<25} {p['position']:<4} {p['team']:<5} {p['total_vot']:<10.2f} "
               f"{wc_contrib:<8.2f} {div_contrib:<8.2f} {conf_contrib:<8.2f} {sb_contrib:<8.2f}")
     
     # Display by position
@@ -158,19 +159,19 @@ def main():
         print(f"\n\n{'='*70}")
         print(f"TOP {pos_name}s BY TOTAL PLAYOFF VALUE")
         print("=" * 70)
-        print(f"{'Rank':<5} {'Player':<25} {'Team':<5} {'Total VOR':<10} {'Prob Adj Pts':<12}")
+        print(f"{'Rank':<5} {'Player':<25} {'Team':<5} {'Total VOT':<10} {'Prob Adj Pts':<12}")
         print("-" * 70)
         
         limit = 20 if pos_name == 'QB' else 30 if pos_name in ['RB', 'WR'] else 15
         for i, p in enumerate(pos_players[:limit], 1):
-            print(f"{i:<5} {p['name']:<25} {p['team']:<5} {p['total_vor']:<10.2f} {p['total_points']:<12.2f}")
+            print(f"{i:<5} {p['name']:<25} {p['team']:<5} {p['total_vot']:<10.2f} {p['total_points']:<12.2f}")
     
     # Export to CSV
     output_file = get_output_path('total_playoff_value.csv')
     with open(output_file, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=[
-            'name', 'position', 'team', 'total_vor', 'total_points',
-            'wc_vor', 'div_vor', 'conf_vor', 'sb_vor',
+            'name', 'position', 'team', 'total_vot', 'total_points',
+            'wc_vot', 'div_vot', 'conf_vot', 'sb_vot',
             'wc_prob', 'div_prob', 'conf_prob', 'sb_prob'
         ])
         writer.writeheader()
@@ -185,7 +186,7 @@ def main():
     print("\n\nTOP 10 MOST VALUABLE PLAYERS:")
     print("-" * 50)
     for i, p in enumerate(players_list[:10], 1):
-        print(f"  {i}. {p['name']} ({p['position']}, {p['team']}) - {p['total_vor']:.2f} Total VOR")
+        print(f"  {i}. {p['name']} ({p['position']}, {p['team']}) - {p['total_vot']:.2f} Total VOT")
     
     return players_list
 

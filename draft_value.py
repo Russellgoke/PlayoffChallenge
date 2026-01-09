@@ -9,8 +9,10 @@ from utils import (
     load_total_values,
     load_drafted_players,
     get_output_path,
-    ensure_total_value_exists,
 )
+
+# Import calculate_total_value to run it directly
+import calculate_total_value
 
 
 
@@ -87,35 +89,35 @@ def validate_drafted_players(drafted_names, all_players):
 def calculate_draft_value(players):
     """
     Calculate draft value for each player.
-    Draft Value = Player's Total VOR - Average of next 2 players' Total VOR at SAME POSITION
+    Draft Value = Player's Total VOT - Average of next 2 players' Total VOT at SAME POSITION
     """
     # Group players by position
     by_position = defaultdict(list)
     for p in players:
         by_position[p['position']].append(p)
     
-    # Sort each position by total_vor and calculate draft value within position
+    # Sort each position by total_vot and calculate draft value within position
     for pos, pos_players in by_position.items():
-        pos_players.sort(key=lambda x: x['total_vor'], reverse=True)
+        pos_players.sort(key=lambda x: x['total_vot'], reverse=True)
         
         for i, player in enumerate(pos_players):
             # Get next 2 players at SAME position
             next_players = pos_players[i+1:i+3]
             
             if len(next_players) >= 2:
-                avg_next_two = (next_players[0]['total_vor'] + next_players[1]['total_vor']) / 2
+                avg_next_two = (next_players[0]['total_vot'] + next_players[1]['total_vot']) / 2
             elif len(next_players) == 1:
-                avg_next_two = next_players[0]['total_vor']
+                avg_next_two = next_players[0]['total_vot']
             else:
                 # Last player at position - use 0 as baseline
                 avg_next_two = 0
             
-            player['draft_value'] = player['total_vor'] - avg_next_two
+            player['draft_value'] = player['total_vot'] - avg_next_two
             player['avg_next_two'] = avg_next_two
             player['pos_rank'] = i + 1
     
-    # Sort all players by total_vor for overall ranking
-    players.sort(key=lambda x: x['total_vor'], reverse=True)
+    # Sort all players by total_vot for overall ranking
+    players.sort(key=lambda x: x['total_vot'], reverse=True)
     for i, player in enumerate(players):
         player['overall_rank'] = i + 1
     
@@ -124,12 +126,15 @@ def calculate_draft_value(players):
 
 def main():
     print("=" * 70)
-    print("DYNAMIC DRAFT VALUE CALCULATOR")
+    print("DRAFT VALUE CALCULATOR")
     print("=" * 70)
     
-    # Check if total_playoff_value.csv exists, generate if needed
-    if not ensure_total_value_exists('total_playoff_value.csv'):
-        print("Warning: total_playoff_value.csv is missing. Continuing anyway...")
+    # Always run calculate_total_value first to get fresh data
+    print("\nRunning total value calculations...")
+    calculate_total_value.main()
+    print("\n" + "=" * 70)
+    print("CALCULATING DRAFT VALUES")
+    print("=" * 70)
     
     # Load all players
     all_players = load_total_values('total_playoff_value.csv')
@@ -158,14 +163,14 @@ def main():
     
     # Display results
     print("\n" + "=" * 90)
-    print("TOP 30 AVAILABLE PLAYERS BY TOTAL VOR")
+    print("TOP 30 AVAILABLE PLAYERS BY TOTAL VOT")
     print("=" * 90)
-    print(f"{'Rank':<5} {'Player':<25} {'Pos':<4} {'Team':<5} {'Total VOR':<10} {'Avg Next 2':<12} {'Draft Val':<10}")
+    print(f"{'Rank':<5} {'Player':<25} {'Pos':<4} {'Team':<5} {'Total VOT':<10} {'Avg Next 2':<12} {'Draft Val':<10}")
     print("-" * 90)
     
     for p in available_players[:30]:
         print(f"{p['overall_rank']:<5} {p['name']:<25} {p['position']:<4} {p['team']:<5} "
-              f"{p['total_vor']:<10.2f} {p['avg_next_two']:<12.2f} {p['draft_value']:<10.2f}")
+              f"{p['total_vot']:<10.2f} {p['avg_next_two']:<12.2f} {p['draft_value']:<10.2f}")
     
     # Display by position
     positions = {'QB': [], 'RB': [], 'WR': [], 'TE': []}
@@ -177,14 +182,14 @@ def main():
         print(f"\n\n{'='*80}")
         print(f"TOP AVAILABLE {pos_name}s")
         print("=" * 80)
-        print(f"{'Pos Rank':<9} {'Player':<25} {'Team':<5} {'Total VOR':<10} {'Avg Next 2':<12} {'Draft Val':<10}")
+        print(f"{'Pos Rank':<9} {'Player':<25} {'Team':<5} {'Total VOT':<10} {'Avg Next 2':<12} {'Draft Val':<10}")
         print("-" * 80)
         
         limit = 10 if pos_name in ['QB', 'TE'] else 15
         
         for p in pos_players[:limit]:
             print(f"{p['pos_rank']:<9} {p['name']:<25} {p['team']:<5} "
-                  f"{p['total_vor']:<10.2f} {p['avg_next_two']:<12.2f} {p['draft_value']:<10.2f}")
+                  f"{p['total_vot']:<10.2f} {p['avg_next_two']:<12.2f} {p['draft_value']:<10.2f}")
     
     # Draft recommendations
     print("\n\n" + "=" * 70)
@@ -196,22 +201,22 @@ def main():
     
     print("\nTop picks by urgency (highest draft value):")
     for i, p in enumerate(by_draft_value[:10], 1):
-        print(f"  {i:>2}. {p['name']:<25} ({p['position']}) - {p['draft_value']:.2f} DV, {p['total_vor']:.2f} VOR")
+        print(f"  {i:>2}. {p['name']:<25} ({p['position']}) - {p['draft_value']:.2f} DV, {p['total_vot']:.2f} VOT")
     
     # Best available by position
     print("\n\nBest available by position:")
     for pos_name in ['QB', 'RB', 'WR', 'TE']:
         if positions[pos_name]:
             best = positions[pos_name][0]
-            print(f"  {pos_name}: {best['name']:<25} - {best['total_vor']:.2f} VOR, {best['draft_value']:.2f} DV")
+            print(f"  {pos_name}: {best['name']:<25} - {best['total_vot']:.2f} VOT, {best['draft_value']:.2f} DV")
     
-    # Export to CSV (only available players, sorted by total_vor)
+    # Export to CSV (only available players, sorted by total_vot)
     output_file = get_output_path('draft_value.csv')
-    available_players.sort(key=lambda x: x['total_vor'], reverse=True)
+    available_players.sort(key=lambda x: x['total_vot'], reverse=True)
     
     with open(output_file, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=[
-            'overall_rank', 'name', 'position', 'team', 'pos_rank', 'total_vor', 
+            'overall_rank', 'name', 'position', 'team', 'pos_rank', 'total_vot', 
             'total_points', 'avg_next_two', 'draft_value'
         ])
         writer.writeheader()
